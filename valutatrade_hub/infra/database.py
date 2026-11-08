@@ -23,11 +23,12 @@ class DatabaseManager:
                 "users": settings.get("users_file"),
                 "portfolios": settings.get("portfolios_file"),
                 "rates": settings.get("rates_file"),
+                "history": settings.get("history_file"),
             }
         return cls._instance
 
     def read(self, name: str) -> Any:
-        """Читает данные: 'users', 'portfolios' или 'rates'."""
+        """Читает данные: 'users', 'portfolios', 'rates' или 'history'."""
         default = {} if name == "rates" else []
         try:
             with open(self._files[name], encoding="utf-8") as f:

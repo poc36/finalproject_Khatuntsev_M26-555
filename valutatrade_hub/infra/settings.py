@@ -9,6 +9,7 @@ DEFAULTS = {
     "users_file": "data/users.json",
     "portfolios_file": "data/portfolios.json",
     "rates_file": "data/rates.json",
+    "history_file": "data/exchange_rates.json",
     "rates_ttl_seconds": 300,
     "default_base_currency": "USD",
     "log_dir": "logs",
@@ -17,6 +18,8 @@ DEFAULTS = {
     "log_format": "%(levelname)s %(asctime)s %(message)s",
     "log_max_bytes": 1_000_000,
     "log_backup_count": 3,
+    "parser_log_file": "logs/parser.log",
+    "parser_interval_seconds": 300,
 }
 
 
