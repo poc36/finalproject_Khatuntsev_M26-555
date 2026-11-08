@@ -3,6 +3,8 @@
 import hashlib
 from datetime import datetime
 
+from valutatrade_hub.core.exceptions import InsufficientFundsError
+
 # Фиксированные курсы к USD (заглушка до подключения Parser Service)
 EXCHANGE_RATES = {
     "USD": 1.0,
@@ -122,10 +124,7 @@ class Wallet:
         """Снятие средств, если баланс позволяет."""
         self._check_amount(amount)
         if amount > self._balance:
-            raise ValueError(
-                f"Недостаточно средств: доступно {self._balance:.4f} "
-                f"{self.currency_code}, требуется {amount:.4f} {self.currency_code}"
-            )
+            raise InsufficientFundsError(self._balance, amount, self.currency_code)
         self.balance = self._balance - amount
 
     def get_balance_info(self) -> str:
