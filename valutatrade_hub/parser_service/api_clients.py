@@ -21,7 +21,7 @@ def _utc_iso(unix_time: float | None) -> str:
 
 
 class BaseApiClient(ABC):
-    """Базовый клиент: fetch_rates() -> {"BTC_USD": 59337.21, ...}."""
+    """Базовый клиент: fetch_rates() -> {"BTC_USD": <курс>, ...}."""
 
     SOURCE = "base"
 
@@ -76,6 +76,7 @@ class CoinGeckoClient(BaseApiClient):
     SOURCE = "CoinGecko"
 
     def fetch_rates(self) -> dict[str, float]:
+        """Курсы криптовалют к USD: {"BTC_USD": <курс>, ...}."""
         base = self.config.BASE_CURRENCY
         ids = [self.config.CRYPTO_ID_MAP[c] for c in self.config.CRYPTO_CURRENCIES]
         params = {
@@ -107,6 +108,7 @@ class ExchangeRateApiClient(BaseApiClient):
     SOURCE = "ExchangeRate-API"
 
     def fetch_rates(self) -> dict[str, float]:
+        """Курсы фиатных валют к USD: {"EUR_USD": <курс>, ...}."""
         key = self.config.EXCHANGERATE_API_KEY
         if not key:
             raise ApiRequestError("не задан ключ EXCHANGERATE_API_KEY")
