@@ -2,6 +2,8 @@
 
 import shlex
 
+from prettytable import PrettyTable
+
 from valutatrade_hub.core import usecases
 from valutatrade_hub.core.currencies import supported_codes
 from valutatrade_hub.core.exceptions import (
@@ -18,6 +20,8 @@ HELP_TEXT = """Команды:
   buy --currency <код> --amount <количество>
   sell --currency <код> --amount <количество>
   get-rate --from <валюта> --to <валюта>
+  update-rates [--source coingecko|exchangerate]
+  show-rates [--currency <код>] [--top <N>] [--base <валюта>]
   help
   exit"""
 
@@ -56,16 +60,38 @@ def fmt_rate(rate: float) -> str:
 
 
 def print_portfolio(data: dict) -> None:
-    """Выводит портфель."""
+    """Выводит портфель таблицей prettytable."""
     if not data["rows"]:
         print(f"У пользователя '{data['username']}' пока нет кошельков")
         return
     base = data["base"]
     print(f"Портфель пользователя '{data['username']}' (база: {base}):")
+    table = PrettyTable(["Валюта", "Баланс", f"Стоимость, {base}"])
+    table.align["Баланс"] = "r"
+    table.align[f"Стоимость, {base}"] = "r"
     for code, balance, value in data["rows"]:
-        print(f"- {code}: {fmt_amount(code, balance)}  → {value:,.2f} {base}")
-    print("---------------------------------")
+        table.add_row([code, fmt_amount(code, balance), f"{value:,.2f}"])
+    print(table)
     print(f"ИТОГО: {data['total']:,.2f} {base}")
+
+
+def fmt_cache_rate(rate: float) -> str:
+    """Курс для show-rates: ≥100 — 2 знака, ≥1 — 4 знака, меньше — без нулей."""
+    if rate >= 100:
+        return f"{rate:.2f}"
+    if rate >= 1:
+        return f"{rate:.4f}"
+    return fmt_rate(rate)
+
+
+def print_rates(data: dict) -> None:
+    """Выводит курсы из кеша таблицей prettytable."""
+    print(f"Rates from cache (updated at {data['last_refresh']}):")
+    table = PrettyTable(["Пара", "Курс", "Обновлено", "Источник"])
+    table.align["Курс"] = "r"
+    for pair, rate, updated_at, source in data["rows"]:
+        table.add_row([pair, fmt_cache_rate(rate), updated_at, source])
+    print(table)
 
 
 def print_trade(title: str, value_title: str, data: dict) -> None:
@@ -73,7 +99,7 @@ def print_trade(title: str, value_title: str, data: dict) -> None:
     code, base = data["currency"], data["base"]
     print(
         f"{title}: {data['amount']:.4f} {code} по курсу "
-        f"{data['rate']:.2f} {base}/{code}"
+        f"{fmt_cache_rate(data['rate'])} {base}/{code}"
     )
     print("Изменения в портфеле:")
     print(f"- {code}: было {data['before']:.4f} → стало {data['after']:.4f}")
@@ -132,6 +158,24 @@ def run() -> None:
                     f, t = from_code.upper(), to_code.upper()
                     print(f"Курс {f}→{t}: {fmt_rate(rate)} (обновлено: {updated_at})")
                     print(f"Обратный курс {t}→{f}: {fmt_rate(1 / rate)}")
+                case "update-rates":
+                    result = usecases.update_rates(args.get("source"))
+                    if result["errors"]:
+                        print(
+                            "Update completed with errors. "
+                            "Check logs/parser.log for details."
+                        )
+                    else:
+                        print(
+                            "Update successful. Total rates updated: "
+                            f"{result['updated']}. "
+                            f"Last refresh: {result['last_refresh']}"
+                        )
+                case "show-rates":
+                    data = usecases.show_rates(
+                        args.get("currency"), args.get("top"), args.get("base")
+                    )
+                    print_rates(data)
                 case "help":
                     print(HELP_TEXT)
                 case "exit":

@@ -2,12 +2,11 @@
 
 import hashlib
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
-from valutatrade_hub.core.currencies import get_currency
+from valutatrade_hub.core.currencies import CryptoCurrency, get_currency
 from valutatrade_hub.core.exceptions import ApiRequestError, CurrencyNotFoundError
 from valutatrade_hub.core.models import (
-    EXCHANGE_RATES,
     MIN_PASSWORD_LENGTH,
     Portfolio,
     User,
@@ -17,10 +16,13 @@ from valutatrade_hub.core.utils import convert, validate_amount, validate_curren
 from valutatrade_hub.decorators import log_action
 from valutatrade_hub.infra.database import DatabaseManager
 from valutatrade_hub.infra.settings import SettingsLoader
+from valutatrade_hub.parser_service.storage import RatesStorage
+from valutatrade_hub.parser_service.updater import create_updater
 
 # Синглтоны: одна конфигурация и один доступ к хранилищу на всё приложение
 settings = SettingsLoader()
 db = DatabaseManager()
+storage = RatesStorage()
 
 
 # ---------- пользователи ----------
@@ -120,44 +122,104 @@ def _save_portfolio(user_id: int, portfolio: Portfolio) -> None:
 # ---------- курсы ----------
 
 
-def _fetch_rate_to_usd(code: str) -> float:
-    """Заглушка внешнего API курсов (до подключения Parser Service)."""
-    if code not in EXCHANGE_RATES:
-        raise ApiRequestError(f"нет данных по валюте {code}")
-    return EXCHANGE_RATES[code]
+def _parse_time(value: str) -> datetime:
+    """ISO-время (в т.ч. с 'Z') в datetime с часовым поясом UTC."""
+    moment = datetime.fromisoformat(value)
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
-def _rate_to_usd(code: str, cache: dict, now: datetime) -> tuple[float, datetime]:
-    """Курс code→USD из кеша, если он свежий, иначе — из API с обновлением кеша."""
-    base = "USD"
-    if code == base:
-        return 1.0, now
-    key = f"{code}_{base}"
-    entry = cache.get(key)
-    if entry:
-        updated = datetime.fromisoformat(entry["updated_at"])
-        if (now - updated).total_seconds() < settings.get("rates_ttl_seconds"):
-            return entry["rate"], updated
-    rate = _fetch_rate_to_usd(code)
-    cache[key] = {"rate": rate, "updated_at": now.isoformat(timespec="seconds")}
-    cache["source"] = "ExchangeRatesStub"
-    cache["last_refresh"] = now.isoformat(timespec="seconds")
-    return rate, now
+def _fresh_pair(pairs: dict, code: str) -> dict | None:
+    """Пара code_USD из кеша, если она моложе TTL, иначе None."""
+    entry = pairs.get(f"{code}_USD")
+    if entry is None:
+        return None
+    age = datetime.now(timezone.utc) - _parse_time(entry["updated_at"])
+    return entry if age.total_seconds() < settings.get("rates_ttl_seconds") else None
 
 
 def get_rate(from_code: str, to_code: str) -> tuple[float, str]:
-    """Курс from→to и время обновления. Неизвестный код — CurrencyNotFoundError."""
+    """Курс from→to и время обновления из кеша rates.json.
+
+    Неизвестный код — CurrencyNotFoundError. Если курс устарел (старше TTL),
+    запускает Parser Service; если обновить не удалось — ApiRequestError.
+    """
     from_code = get_currency(validate_currency_code(from_code)).code
     to_code = get_currency(validate_currency_code(to_code)).code
+    codes = [c for c in (from_code, to_code) if c != "USD"]
 
-    cache = db.read("rates")
-    now = datetime.now()
-    from_rate, from_time = _rate_to_usd(from_code, cache, now)
-    to_rate, to_time = _rate_to_usd(to_code, cache, now)
-    db.write("rates", cache)
+    pairs = storage.load_rates()["pairs"]
+    if any(_fresh_pair(pairs, c) is None for c in codes):
+        create_updater().run_update()  # может бросить ApiRequestError
+        pairs = storage.load_rates()["pairs"]
 
-    updated_at = min(from_time, to_time).strftime("%Y-%m-%d %H:%M:%S")
-    return from_rate / to_rate, updated_at
+    rates, times = {"USD": 1.0}, []
+    for code in codes:
+        entry = _fresh_pair(pairs, code)
+        if entry is None:
+            raise ApiRequestError(f"курс {code}→USD недоступен")
+        rates[code] = entry["rate"]
+        times.append(_parse_time(entry["updated_at"]))
+
+    updated = min(times) if times else datetime.now(timezone.utc)
+    return rates[from_code] / rates[to_code], updated.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def show_rates(
+    currency: str | None = None, top: int | None = None, base: str | None = None
+) -> dict:
+    """Курсы из локального кеша с фильтрами --currency, --top, --base."""
+    cache = storage.load_rates()
+    pairs = cache["pairs"]
+    if not pairs:
+        raise ValueError(
+            "Локальный кеш курсов пуст. "
+            "Выполните 'update-rates', чтобы загрузить данные."
+        )
+
+    base = get_currency(validate_currency_code(base)).code if base else "USD"
+    if base == "USD":
+        base_rate = 1.0
+    elif f"{base}_USD" in pairs:
+        base_rate = pairs[f"{base}_USD"]["rate"]
+    else:
+        raise ValueError(f"Курс для '{base}' не найден в кеше.")
+
+    rows = []
+    for pair, entry in pairs.items():
+        code = pair.split("_")[0]
+        if code != base:
+            rows.append(
+                (code, entry["rate"] / base_rate, entry["updated_at"], entry["source"])
+            )
+    if base != "USD":
+        base_entry = pairs[f"{base}_USD"]
+        rows.append(
+            ("USD", 1 / base_rate, base_entry["updated_at"], base_entry["source"])
+        )
+
+    if currency:
+        code = validate_currency_code(currency)
+        rows = [row for row in rows if row[0] == code]
+        if not rows:
+            raise ValueError(f"Курс для '{code}' не найден в кеше.")
+    if top:
+        crypto = [r for r in rows if isinstance(get_currency(r[0]), CryptoCurrency)]
+        rows = sorted(crypto, key=lambda r: r[1], reverse=True)[: int(top)]
+    else:
+        rows.sort()
+
+    return {
+        "last_refresh": cache["last_refresh"],
+        "rows": [
+            (f"{code}_{base}", rate, updated_at, source)
+            for code, rate, updated_at, source in rows
+        ],
+    }
+
+
+def update_rates(source: str | None = None) -> dict:
+    """Немедленное обновление курсов через Parser Service."""
+    return create_updater(source).run_update()
 
 
 # ---------- операции с портфелем ----------
