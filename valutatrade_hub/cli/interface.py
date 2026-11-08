@@ -5,7 +5,11 @@ import shlex
 from prettytable import PrettyTable
 
 from valutatrade_hub.core import usecases
-from valutatrade_hub.core.currencies import supported_codes
+from valutatrade_hub.core.currencies import (
+    CryptoCurrency,
+    get_currency,
+    supported_codes,
+)
 from valutatrade_hub.core.exceptions import (
     ApiRequestError,
     CurrencyNotFoundError,
@@ -24,8 +28,6 @@ HELP_TEXT = """Команды:
   show-rates [--currency <код>] [--top <N>] [--base <валюта>]
   help
   exit"""
-
-CRYPTO_CURRENCIES = {"BTC", "ETH"}
 
 
 def parse_args(tokens: list[str]) -> dict[str, str]:
@@ -51,7 +53,8 @@ def require(args: dict[str, str], *names: str) -> list[str]:
 
 def fmt_amount(code: str, value: float) -> str:
     """Криптовалюты — 4 знака после запятой, остальные — 2."""
-    return f"{value:.4f}" if code in CRYPTO_CURRENCIES else f"{value:.2f}"
+    is_crypto = isinstance(get_currency(code), CryptoCurrency)
+    return f"{value:.4f}" if is_crypto else f"{value:.2f}"
 
 
 def fmt_rate(rate: float) -> str:

@@ -5,7 +5,7 @@ from datetime import datetime
 
 from valutatrade_hub.core.exceptions import InsufficientFundsError
 
-# Фиксированные курсы к USD (заглушка до подключения Parser Service)
+# Запасные курсы к USD: используются, если в кеше rates.json нет нужной пары
 EXCHANGE_RATES = {
     "USD": 1.0,
     "EUR": 1.0786,
@@ -167,12 +167,25 @@ class Portfolio:
         """Возвращает объект Wallet по коду валюты."""
         return self._wallets.get(currency_code)
 
+    @staticmethod
+    def _rates_to_usd() -> dict[str, float]:
+        """Курсы к USD: из кеша rates.json, недостающие — из EXCHANGE_RATES."""
+        from valutatrade_hub.parser_service.storage import RatesStorage
+
+        rates = dict(EXCHANGE_RATES)
+        for pair, entry in RatesStorage().load_rates()["pairs"].items():
+            code, to_code = pair.split("_")
+            if to_code == "USD":
+                rates[code] = entry["rate"]
+        rates["USD"] = 1.0
+        return rates
+
     def get_total_value(self, base_currency: str = "USD") -> float:
-        """Общая стоимость всех валют в базовой валюте."""
-        if base_currency not in EXCHANGE_RATES:
+        """Общая стоимость всех валют в базовой валюте по курсам из кеша."""
+        rates = self._rates_to_usd()
+        if base_currency not in rates:
             raise ValueError(f"Неизвестная базовая валюта '{base_currency}'")
         total_usd = sum(
-            wallet.balance * EXCHANGE_RATES[code]
-            for code, wallet in self._wallets.items()
+            wallet.balance * rates[code] for code, wallet in self._wallets.items()
         )
-        return total_usd / EXCHANGE_RATES[base_currency]
+        return total_usd / rates[base_currency]

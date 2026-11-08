@@ -24,6 +24,9 @@ settings = SettingsLoader()
 db = DatabaseManager()
 storage = RatesStorage()
 
+# Базовая валюта расчётов: все пары в кеше хранятся как <КОД>_<BASE_CURRENCY>
+BASE_CURRENCY = settings.get("default_base_currency")
+
 
 # ---------- пользователи ----------
 
@@ -130,7 +133,7 @@ def _parse_time(value: str) -> datetime:
 
 def _fresh_pair(pairs: dict, code: str) -> dict | None:
     """Пара code_USD из кеша, если она моложе TTL, иначе None."""
-    entry = pairs.get(f"{code}_USD")
+    entry = pairs.get(f"{code}_{BASE_CURRENCY}")
     if entry is None:
         return None
     age = datetime.now(timezone.utc) - _parse_time(entry["updated_at"])
@@ -145,18 +148,18 @@ def get_rate(from_code: str, to_code: str) -> tuple[float, str]:
     """
     from_code = get_currency(validate_currency_code(from_code)).code
     to_code = get_currency(validate_currency_code(to_code)).code
-    codes = [c for c in (from_code, to_code) if c != "USD"]
+    codes = [c for c in (from_code, to_code) if c != BASE_CURRENCY]
 
     pairs = storage.load_rates()["pairs"]
     if any(_fresh_pair(pairs, c) is None for c in codes):
         create_updater().run_update()  # может бросить ApiRequestError
         pairs = storage.load_rates()["pairs"]
 
-    rates, times = {"USD": 1.0}, []
+    rates, times = {BASE_CURRENCY: 1.0}, []
     for code in codes:
         entry = _fresh_pair(pairs, code)
         if entry is None:
-            raise ApiRequestError(f"курс {code}→USD недоступен")
+            raise ApiRequestError(f"курс {code}→{BASE_CURRENCY} недоступен")
         rates[code] = entry["rate"]
         times.append(_parse_time(entry["updated_at"]))
 
@@ -176,11 +179,11 @@ def show_rates(
             "Выполните 'update-rates', чтобы загрузить данные."
         )
 
-    base = get_currency(validate_currency_code(base)).code if base else "USD"
-    if base == "USD":
+    base = get_currency(validate_currency_code(base)).code if base else BASE_CURRENCY
+    if base == BASE_CURRENCY:
         base_rate = 1.0
-    elif f"{base}_USD" in pairs:
-        base_rate = pairs[f"{base}_USD"]["rate"]
+    elif f"{base}_{BASE_CURRENCY}" in pairs:
+        base_rate = pairs[f"{base}_{BASE_CURRENCY}"]["rate"]
     else:
         raise ValueError(f"Курс для '{base}' не найден в кеше.")
 
@@ -191,10 +194,15 @@ def show_rates(
             rows.append(
                 (code, entry["rate"] / base_rate, entry["updated_at"], entry["source"])
             )
-    if base != "USD":
-        base_entry = pairs[f"{base}_USD"]
+    if base != BASE_CURRENCY:
+        base_entry = pairs[f"{base}_{BASE_CURRENCY}"]
         rows.append(
-            ("USD", 1 / base_rate, base_entry["updated_at"], base_entry["source"])
+            (
+                BASE_CURRENCY,
+                1 / base_rate,
+                base_entry["updated_at"],
+                base_entry["source"],
+            )
         )
 
     if currency:
@@ -228,7 +236,7 @@ def update_rates(source: str | None = None) -> dict:
 def show_portfolio(user: User | None, base: str | None = None) -> dict:
     """Кошельки пользователя и их стоимость в базовой валюте."""
     _require_login(user.user_id if user else None)
-    base = validate_currency_code(base or settings.get("default_base_currency"))
+    base = validate_currency_code(base or BASE_CURRENCY)
     try:
         get_currency(base)
     except CurrencyNotFoundError:
@@ -243,7 +251,7 @@ def show_portfolio(user: User | None, base: str | None = None) -> dict:
         "username": user.username,
         "base": base,
         "rows": rows,
-        "total": sum(value for _, _, value in rows),
+        "total": portfolio.get_total_value(base),
     }
 
 
@@ -253,7 +261,7 @@ def buy(user_id: int | None, currency_code: str, amount) -> dict:
     _require_login(user_id)
     amount = validate_amount(amount)
     code = get_currency(validate_currency_code(currency_code)).code
-    rate, _ = get_rate(code, "USD")
+    rate, _ = get_rate(code, BASE_CURRENCY)
 
     portfolio = _load_portfolio(user_id)
     wallet = portfolio.get_wallet(code) or portfolio.add_currency(code)
@@ -265,7 +273,7 @@ def buy(user_id: int | None, currency_code: str, amount) -> dict:
         "currency": code,
         "amount": amount,
         "rate": rate,
-        "base": "USD",
+        "base": BASE_CURRENCY,
         "before": before,
         "after": wallet.balance,
         "value": convert(amount, rate),
@@ -288,14 +296,14 @@ def sell(user_id: int | None, currency_code: str, amount) -> dict:
         )
     before = wallet.balance
     wallet.withdraw(amount)
-    rate, _ = get_rate(code, "USD")
+    rate, _ = get_rate(code, BASE_CURRENCY)
     _save_portfolio(user_id, portfolio)
 
     return {
         "currency": code,
         "amount": amount,
         "rate": rate,
-        "base": "USD",
+        "base": BASE_CURRENCY,
         "before": before,
         "after": wallet.balance,
         "value": convert(amount, rate),
